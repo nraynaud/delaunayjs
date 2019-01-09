@@ -2,14 +2,13 @@
 <meta charset="utf-8"/>
 <head><title>Test Voronoï</title></head>
 <body>
-<h1>Lawson Delaunay triangulation algorithm implemented with Quad-Edges</h1>
-<p>Example of a Delaunay triangulation computed with a QuadEdge data structure.</p>
+<h1>Constrained Delaunay triangulation algorithm implemented with Quad-Edges</h1>
 <p>This example uses a refinement algorithm where we compute a giant triangle
     surrounding all the sites, then insert them one by one while keeping the
     triangulation.</p>
 <p>The geometric predicates (inCircle and isRightOf) have not been made robust. The envelope has been left gray. </p>
 <p>Clicking on a triangle displays its circumscribed
-    circle, it should be empty.</p>
+    circle, it should be respect the "Modified circle criterion".</p>
 <div id="draw"></div>
 
 
