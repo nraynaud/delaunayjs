@@ -1,0 +1,765 @@
+<html lang="en">
+<meta charset="utf-8"/>
+<head><title>Test Voronoï</title></head>
+<body>
+<h1>A* on a Delaunay triangulation algorithm implemented with Quad-Edges</h1>
+<p>This example uses a refinement algorithm where we compute a giant triangle
+    surrounding all the sites, then insert them one by one while keeping the
+    triangulation.</p>
+<p>The geometric predicates (inCircle and isRightOf) have not been made robust. The envelope has been left gray. </p>
+<p>Clicking on a triangle displays its circumscribed
+    circle, it should be respect the "Modified circle criterion".</p>
+<div id="draw"></div>
+
+
+<script src="svg.js"></script>
+<script src="jquery-1.11.1.min.js"></script>
+<script>
+  // http://www.cs.cmu.edu/afs/andrew/scs/cs/15-463/2001/pub/src/a2/cell/
+  // https://github.com/hastebrot/jsts-dist/blob/master/src/jsts
+  // https://github.com/savithru-j/cdt-js
+  // https://doc.cgal.org/latest/Triangulation_2/index.html
+
+  // GRAPH STUFF
+
+  class QuadEdge {
+    constructor () {
+      this.rot = null
+      this.vertex = null
+      this.next = null
+    }
+
+    get sym () {
+      return this.rot.rot
+    }
+
+    get org () {
+      return this.vertex
+    }
+
+    set org (o) {
+      this.vertex = o
+    }
+
+    get dest () {
+      return this.sym.org
+    }
+
+    set dest (d) {
+      this.sym.org = d
+    }
+
+    get invRot () {
+      return this.rot.sym
+    }
+
+    get left () {
+      return this.rot.vertex
+    }
+
+    get right () {
+      return this.invRot.vertex
+    }
+
+    get lNext () {
+      return this.invRot.oNext.rot
+    }
+
+    get lPrev () {
+      return this.next.sym
+    }
+
+    get rNext () {
+      return this.rot.oNext.invRot
+    }
+
+    get oNext () {
+      return this.next
+    }
+
+    get oPrev () {
+      return this.rot.next.rot
+    }
+
+    get dPrev () {
+      return this.invRot.oNext.invRot
+    }
+
+    get rPrev () {
+      return this.sym.oNext
+    }
+  }
+
+  const allEdges = []
+
+  function makeEdge (v1, v2) {
+    const q0 = new QuadEdge()
+    allEdges.push(q0)
+    const q1 = new QuadEdge()
+    const q2 = new QuadEdge()
+    const q3 = new QuadEdge()
+
+    q0.rot = q1
+    q1.rot = q2
+    q2.rot = q3
+    q3.rot = q0
+
+    q0.next = q0
+    q1.next = q3
+    q2.next = q2
+    q3.next = q1
+
+    q0.org = v1
+    q0.dest = v2
+    console.assert(q0.dest === v2)
+    console.assert(q0.org !== q0.dest, q0.org, q0.dest)
+    console.assert(q0.left === q0.right)
+    console.assert(q0.lNext === q0.rNext)
+    console.assert(q0.lNext === q0.sym)
+    console.assert(q0.oPrev === q0.oNext)
+    console.assert(q0.oPrev === q0)
+    q1.org = generateColor()
+    q3.org = generateColor()
+    return q0
+  }
+
+  function splice (a, b) {
+    const alpha = a.oNext.rot
+    const beta = b.oNext.rot
+
+    const t1 = b.oNext
+    const t2 = a.oNext
+    const t3 = beta.oNext
+    const t4 = alpha.oNext
+
+    a.next = t1
+    b.next = t2
+    alpha.next = t3
+    beta.next = t4
+  }
+
+  function connect (a, b) {
+    const e = makeEdge(a.dest, b.org)
+    splice(e, a.lNext)
+    splice(e.sym, b)
+    return e
+  }
+
+  function swap (e) {
+    const a = e.oPrev
+    const b = e.sym.oPrev
+    splice(e, a)
+    splice(e.sym, b)
+    splice(e, a.lNext)
+    splice(e.sym, b.lNext)
+    e.org = a.dest
+    e.dest = b.dest
+  }
+</script>
+<script>
+  // GEOMETRIC STUFF
+  function triArea (a, b, c) {
+    return (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)
+  }
+
+  function ccw (a, b, c) {
+    return triArea(a, b, c) > 0
+  }
+
+  function inCircle (a, b, c, p) {
+    const det = (a.x * a.x + a.y * a.y) * triArea(b, c, p) -
+      (b.x * b.x + b.y * b.y) * triArea(a, c, p) +
+      (c.x * c.x + c.y * c.y) * triArea(a, b, p) -
+      (p.x * p.x + p.y * p.y) * triArea(a, b, c)
+    return det > 0
+  }
+
+  // check the circle of the triangle this edge is in vs the point of the symmetric triangle
+  function inCircleEdge (edge) {
+    return inCircle(edge.org, edge.rPrev.dest, edge.dest, edge.sym.rPrev.dest)
+  }
+
+  function circumCenter (p0, p1, p2) {
+    const d = 2 * (p0.x * (p1.y - p2.y) + p1.x * (p2.y - p0.y) + p2.x * (p0.y - p1.y))
+    const p0_mag = p0.x * p0.x + p0.y * p0.y
+    const p1_mag = p1.x * p1.x + p1.y * p1.y
+    const p2_mag = p2.x * p2.x + p2.y * p2.y
+
+    const x = (p0_mag * (p1.y - p2.y) + p1_mag * (p2.y - p0.y) + p2_mag * (p0.y - p1.y)) / d
+    const y = (p0_mag * (p2.x - p1.x) + p1_mag * (p0.x - p2.x) + p2_mag * (p1.x - p0.x)) / d
+    return {x, y}
+  }
+
+  function circumCircleForEdge (edge) {
+    return circumCircle(edge.org, edge.dest, edge.rPrev.dest)
+  }
+
+  function distance (v1, v2) {
+    const sq = v => v * v
+    return Math.sqrt(sq(v1.x - v2.x) + sq(v1.y - v2.y))
+  }
+
+  function circumCircle (a, b, c) {
+    const {x, y} = circumCenter(a, b, c)
+    const center = {x, y}
+    return {...center, r: distance(a, center)}
+  }
+
+  console.assert(inCircle({x: 1, y: 2}, {x: 1, y: 1}, {x: 2, y: 1}, {x: 1.5, y: 1.5}))
+  console.assert(!inCircle({x: 1, y: 2}, {x: 1, y: 1}, {x: 2, y: 1}, {x: 15, y: 15}))
+
+  function edgeVector (e) {
+    const dx = e.dest.x - e.org.x
+    const dy = e.dest.y - e.org.y
+    return {x: dx, y: dy}
+  }
+
+  function edgeLength (e) {
+    return distance(e.dest, e.org)
+  }
+
+  function edgeOriginBisector (e) {
+    const prevVector = edgeVector(e.oNext)
+    const prevLength = edgeLength(e.oNext)
+    const vector = edgeVector(e)
+    const length = edgeLength(e)
+    return {
+      x: 20 * (vector.x / length + prevVector.x / prevLength),
+      y: 20 * (vector.y / length + prevVector.y / prevLength)
+    }
+  }
+
+  function edgeNormal (e, factor = 1) {
+    const vector = edgeVector(e)
+    const length = edgeLength(e)
+    // noinspection JSSuspiciousNameCombination
+    return {x: factor * -vector.y / length, y: factor * vector.x / length}
+  }
+
+  function edgeDirection (e, factor = 1) {
+    const vector = edgeVector(e)
+    const length = edgeLength(e)
+    return {x: factor * vector.x / length, y: factor * vector.y / length}
+  }
+
+  function isRightOf (point, edge) {
+    return ccw(point, edge.dest, edge.org)
+  }
+
+  // one edge and 2 points
+  function doesIntersect (edge, p1, p2) {
+    //https://stackoverflow.com/a/1968345/72637
+    const s1X = edge.dest.x - edge.org.x
+    const s1Y = edge.dest.y - edge.org.y
+    const s2X = p2.x - p1.x
+    const s2Y = p2.y - p1.y
+    let denominator = (-s2X * s1Y + s1X * s2Y)
+    let s = (-s1Y * (edge.org.x - p1.x) + s1X * (edge.org.y - p1.y)) / denominator
+    let t = (s2X * (edge.org.y - p1.y) - s2Y * (edge.org.x - p1.x)) / denominator
+    return (s >= 0 && s <= 1 && t >= 0 && t <= 1)
+  }
+
+  function edgeEndsAtPoint (edge, point) {
+    return edge.org === point || edge.dest === point
+  }
+
+  function isConvex (p1, p2, p3, p4) {
+    const arr = [p1, p2, p3, p4]
+    const nextPoint = index => arr[(index + 1) % arr.length]
+    const edgeVector = (fromP, toP) => ({x: toP.x - fromP.x, y: toP.y - fromP.y})
+    const crossProductZ = (v1, v2) => v1.x * v2.y - v1.y * v2.x
+    const edgesCrossProducts = arr.map((p, i) => crossProductZ(edgeVector(p, nextPoint(i)), edgeVector(nextPoint(i), nextPoint(i + 1))))
+    edgesCrossProducts.sort((a, b) => a - b)
+    return Math.sign(edgesCrossProducts.shift()) * Math.sign(edgesCrossProducts.pop()) === 1
+  }
+
+  function isQuadAroundEdgeConvex (edge) {
+    return isConvex(edge.rNext.org, edge.org, edge.oNext.dest, edge.dest)
+  }
+
+  function locateFromEdge (vertex, edge) {
+    let iter = 0
+    let e = edge
+    while (true) {
+      iter++
+      if (iter > 1000) {
+        throw new Error('lol')
+      }
+      if (vertex === e.org || vertex === e.dest) {
+        break
+      }
+      if (isRightOf(vertex, e)) {
+        e = e.sym
+      } else if (!isRightOf(vertex, e.oNext)) {
+        e = e.oNext
+      } else if (!isRightOf(vertex, e.dPrev)) {
+        e = e.dPrev
+      } else {
+        break
+      }
+    }
+    return e
+  }
+
+</script>
+<script>
+  // DELAUNAY
+  function makeTriangle (v1, v2, v3) {
+    const ea = makeEdge(v1, v2)
+    const eb = makeEdge(v2, v3)
+    splice(ea.sym, eb)
+    const ec = makeEdge(v3, v1)
+    splice(eb.sym, ec)
+    splice(ec.sym, ea)
+    return ea
+  }
+
+  const TAN_60 = Math.sqrt(3)
+
+  /***
+   * This is a triangle with an horizontal base and 2 60° sides.
+   * minX and maxX are the abscissa at y == 0
+   */
+  class Envelope {
+    constructor () {
+      this.minY = NaN
+      this.minX = NaN
+      this.maxX = NaN
+    }
+
+    addPoint (x, y) {
+      this.minY = isNaN(this.minY) || y < this.minY ? y : this.minY
+      const limits = [x - y / TAN_60, x + y / TAN_60, this.minX, this.maxX].filter(e => !isNaN(e))
+      limits.sort((a, b) => a - b)
+      this.minX = limits[0]
+      this.maxX = limits[limits.length - 1]
+    }
+
+    get apex () {
+      const x = (this.minX + this.maxX) / 2
+      return {x: x, y: Math.abs(this.minX - x) * TAN_60 + 20}
+    }
+
+    get botLeft () {
+      const y = this.minY - 20
+      return {x: this.minX - 20 + (y / TAN_60), y}
+    }
+
+    get botRight () {
+      const y = this.minY - 20
+      return {x: this.maxX + 20 - (y / TAN_60), y}
+    }
+  }
+
+  function insertConstraint (edge, p1, p2) {
+    const newEdgeGroup = svg.group().attr({stroke: 'green', 'stroke-width': 3})
+    newEdgeGroup.line(p1.x, p1.y, p2.x, p2.y)
+    let e = locateFromEdge(p1, edge)
+    if (e.vertex !== p1)
+      e = e.sym
+    while (!doesIntersect(e.rPrev, p1, p2))
+      e = e.oNext
+    const findNextCrossingEdge = (e) => doesIntersect(e.rPrev, p1, p2) && !edgeEndsAtPoint(e.rPrev, p1) && !edgeEndsAtPoint(e.rPrev, p2) ? e.rPrev : e.rPrev.rPrev
+    let e1 = e.rPrev.sym
+    const intersectingEdges = []
+    while (!edgeEndsAtPoint(e1, p2)) {
+      intersectingEdges.push(e1)
+      e1 = findNextCrossingEdge(e1).sym
+    }
+    const displayGroup = root.group()
+    let currentEdge
+    let i = 0
+    const newEdgesSet = new Set()
+    while ((currentEdge = intersectingEdges.shift()) && i < 1000) {
+      i++
+      if (isQuadAroundEdgeConvex(currentEdge)) {
+        swap(currentEdge)
+        newEdgesSet.add(currentEdge)
+        displayEdge(currentEdge, displayGroup).attr({stroke: 'black'})
+        if (!edgeEndsAtPoint(currentEdge, p1) && !edgeEndsAtPoint(currentEdge, p2) && doesIntersect(currentEdge, p1, p2))
+          intersectingEdges.push(currentEdge)
+      } else
+        intersectingEdges.push(currentEdge)
+    }
+    displayGroup.remove()
+    const newEdges = [...newEdgesSet]
+    i = 0
+    while ((currentEdge = newEdges.shift()) && i < 1000) {
+      const polygons = background.group()
+      for (let polygon of iteratePolygons(edge)) {
+        polygons.polygon(polygon.map(point => [point.x, point.y])).attr({
+          fill: 'blue',
+          'fill-opacity': 0.2,
+          stroke: 'white',
+          'stroke-width': 2,
+          'stroke-linejoin': 'round'
+        })
+      }
+      const newEdgesGroup = root.group()
+      if (!(edgeEndsAtPoint(currentEdge, p1) && edgeEndsAtPoint(currentEdge, p2))) {
+        displayEdge(currentEdge, newEdgesGroup).attr({stroke: 'gray', 'stroke-width': 5})
+        displayEdgeCircumCircle(currentEdge, newEdgesGroup).attr({stroke: 'gray', 'stroke-width': 1})
+        if (isQuadAroundEdgeConvex(currentEdge) && inCircleEdge(currentEdge)) {
+          swap(currentEdge)
+          displayEdge(currentEdge, newEdgesGroup).attr({stroke: 'black', 'stroke-width': 5})
+        }
+      }
+      newEdgesGroup.remove()
+      polygons.remove()
+    }
+  }
+
+  function insertSite (edge, vertex) {
+    let e = locateFromEdge(vertex, edge)
+    if (e.org === vertex || e.dest === vertex) {
+      return e
+    }
+    //TODO: is on edge
+    let base = makeEdge(e.org, vertex)
+    splice(base, e)
+    const startEdge = base
+    let i = 10
+    const newEdgeGroup = svg.group().attr({stroke: 'green', 'stroke-width': 3})
+    const flippedEdges = newEdgeGroup.group().attr({stroke: 'red'})
+    newEdgeGroup.circle(10).move(vertex.x - 5, vertex.y - 5).attr({'stroke-width': 1, fill: 'none'})
+    displayEdge(base, newEdgeGroup)
+    do {
+      base = connect(e, base.sym)
+      displayEdge(base, newEdgeGroup)
+      e = base.oPrev
+      i--
+      if (i <= 0)
+        throw Error('error')
+    } while (e.lNext !== startEdge && i > 0)
+    i = 100
+    const suspectGroup = newEdgeGroup.group().attr({stroke: 'orange', 'stroke-width': 4, 'stroke-opacity': 4})
+    do {
+      const t = e.oPrev
+      const circleDef = circumCircle(e.org, t.dest, e.dest)
+      const localGroup = newEdgeGroup.group().attr({stroke: 'red', 'stroke-width': 1, fill: 'none'})
+      localGroup.circle(circleDef.r * 2).move(circleDef.x - circleDef.r, circleDef.y - circleDef.r)
+      displayEdge(e, localGroup)
+      //debugger
+      if (isRightOf(t.dest, e) && inCircle(e.org, t.dest, e.dest, vertex)) {
+        swap(e)
+        displayEdge(e, flippedEdges)
+        // go back and re-test the same edge with the new triangle
+        e = e.oPrev
+      } else {
+        if (e.oNext === startEdge) {
+          newEdgeGroup.remove()
+          return base
+        }
+        displayEdge(e, suspectGroup)
+        e = e.oNext.lPrev
+      }
+      localGroup.remove()
+      i--
+      if (i <= 0)
+        throw Error('error')
+    } while (true)
+  }
+
+</script>
+<script>
+  // A*
+
+  // yields arrays of 3 edges, grouped by face
+  function * iterateEdgesPerFace (startEdge, skippedVertices = new Set()) {
+    const markedEdges = new Set()
+    const edgeStack = [startEdge]
+    while (edgeStack.length) {
+      const e = edgeStack.pop()
+      if (markedEdges.has(e)) {
+        continue
+      }
+      if (e.left) {
+        let skipFace = false
+        let faceEdges = []
+        let faceEdge = e
+        do {
+          markedEdges.add(faceEdge)
+          edgeStack.push(faceEdge.sym)
+          if (skippedVertices.has(faceEdge.org))
+            skipFace = true
+          faceEdges.push(faceEdge)
+          faceEdge = faceEdge.lNext
+        } while (faceEdge !== e)
+        if (!skipFace)
+          yield faceEdges
+      }
+    }
+  }
+
+  function * iterateEdges (startEdge, skippedVertices = new Set()) {
+    for (let edgeArray of iterateEdgesPerFace(startEdge, skippedVertices))
+      for (let e of edgeArray)
+        yield e
+  }
+
+  function comparePoints (a, b) {
+    let xDiff = a.x - b.x
+    return xDiff !== 0 ? xDiff : a.y - b.y
+  }
+
+  const pointID = p => `${p.x},${p.y}`
+
+  const undirectedEdgeId = e => {
+    const vertices = [e.org, e.dest]
+    vertices.sort(comparePoints)
+    return `${pointID(vertices[0])}|${pointID(vertices[1])}`
+  }
+
+  function collectUndirectedEdges (startEdge, skippedVertices = new Set()) {
+    const markedEdges = {}
+
+    for (let e of iterateEdges(startEdge, skippedVertices)) {
+      let s = undirectedEdgeId(e)
+      markedEdges[s] = e
+    }
+    return markedEdges
+  }
+
+  function getNeighbors (edge) {
+    const res = []
+    let e = edge
+    do {
+      e = e.oNext
+      res.push(e)
+    } while (e !== edge)
+    return res
+  }
+
+  function createQueue () {
+    // the laziest queue implementation you'll see today
+    const queue = []
+    // some values might be inserted twice with varying priorities, so we just keep the list of who has been deleted
+    // it's forbidden to pass twice in the same node
+    const deleted = new Set()
+    const sortOrder = (elem1, elem2) => elem1.priority - elem2.priority
+
+    const res = {
+      deleted,
+      queue,
+      addToQueue: (v, priority) => {
+        console.log('addToQueue', v, priority)
+        queue.push({v, priority})
+        queue.sort(sortOrder)
+      },
+      getFromQueue: () => {
+        if (queue.length === 0)
+          return undefined
+        const val = queue.shift().v
+        if (deleted.has(val))
+          return res.getFromQueue()
+        deleted.add(val)
+        return val
+      },
+      isQueueEmpty: () => {
+        if (queue.length === 0)
+          return true
+        // the head of the queue could be some old deleted stuff
+        while (queue.length && deleted.has(queue[0]))
+          queue.shift()
+        return queue.length === 0
+      }
+    }
+    return res
+  }
+
+  //https://en.wikipedia.org/wiki/A*_search_algorithm
+  //https://www.youtube.com/watch?v=ySN5Wnu88nE
+  //https://www.redblobgames.com/pathfinding/a-star/implementation.html
+  function aStar (oneEdge, startVertex, destinationVertex) {
+    let startEdge = locateFromEdge(startVertex, oneEdge)
+    if (startEdge.org !== startVertex)
+      startEdge = startEdge.sym
+    const heuristic = distance
+    const queue = createQueue()
+    queue.addToQueue(startEdge, 0)
+    const cameFrom = {[pointID(startEdge.org)]: null}
+    const costSoFar = {[pointID(startEdge.org)]: 0}
+    while (!queue.isQueueEmpty()) {
+      const current = queue.getFromQueue()
+      console.log('current', current)
+      const currentVertexID = pointID(current.org)
+      if (current.org === destinationVertex)
+        break
+      let neighbors = getNeighbors(current)
+      let nGroup = root.group()
+      for (let n of neighbors) {
+        if (n === current)
+          continue
+        displayEdge(n, nGroup)
+        const neighborVertexID = pointID(n.dest)
+        const newCost = costSoFar[currentVertexID] + distance(current.org, n.dest)
+        if (costSoFar[neighborVertexID] === undefined || newCost < costSoFar[neighborVertexID]) {
+          costSoFar[neighborVertexID] = newCost
+          const priority = newCost + heuristic(destinationVertex, n.dest)
+          queue.addToQueue(n.lNext, priority)
+          cameFrom[neighborVertexID] = n
+        }
+      }
+      nGroup.remove()
+    }
+    console.log('costSoFar', costSoFar)
+    console.log('cameFrom', cameFrom)
+    let currentPoint = destinationVertex
+    while (currentPoint !== startVertex) {
+      const vID = pointID(currentPoint)
+      const edge = cameFrom[vID]
+      displayEdge(edge, edgeGroup)
+      currentPoint = edge.org
+    }
+  }
+
+</script>
+<script>
+  // google: octilinear metric
+  function generatePoints (count, xMin, xSize, yMin, ySize) {
+    const getNumber = (size) => Math.floor(Math.random() * size / 25) * 25
+    const points = {}
+    while (Object.keys(points).length < count) {
+      const point = {x: xMin + getNumber(xSize), y: yMin + getNumber(ySize)}
+      points[`${point.x}|${point.y}`] = point
+    }
+    return Object.values(points)
+  }
+
+  const generateColor = () => '#' + ('000000' + ((1 << 24) * Math.random() | 0).toString(16)).substr(-6)
+
+  function displayEdge (e, group) {
+    const o = e.org
+    const d = e.dest
+    return group.line(o.x, o.y, d.x, d.y)
+  }
+
+  function displayPolygon (edges, group) {
+    group.polygon(edges.map(e => [e.org.x, e.org.y]))
+  }
+
+  function displayEdgeCircumCircle (edge, group) {
+    const circleDef = circumCircleForEdge(edge)
+    return group.circle(circleDef.r * 2).move(circleDef.x - circleDef.r, circleDef.y - circleDef.r)
+  }
+
+  function * iteratePolygons (startEdge, skippedVertices = new Set()) {
+    for (let edgeArray of iterateEdgesPerFace(startEdge, skippedVertices)) {
+      yield edgeArray.map(e => e.org)
+    }
+  }
+
+  let svg = SVG($('#draw')[0])
+  const points = [{'x': 30, 'y': 155}, {'x': 380, 'y': 180}, {'x': 305, 'y': 180}, {'x': 130, 'y': 30}, {
+    'x': 155,
+    'y': 305
+  }, {'x': 105, 'y': 105}, {'x': 280, 'y': 105}, {'x': 180, 'y': 230}, {'x': 80, 'y': 280}, {
+    'x': 255,
+    'y': 305
+  }, {'x': 255, 'y': 80}, {'x': 305, 'y': 305}, {'x': 280, 'y': 205}, {'x': 55, 'y': 155}, {
+    'x': 180,
+    'y': 55
+  }, {'x': 180, 'y': 30}, {'x': 380, 'y': 30}, {'x': 330, 'y': 130}, {'x': 30, 'y': 205}, {
+    'x': 205,
+    'y': 105
+  }, {'x': 55, 'y': 55}, {'x': 330, 'y': 280}, {'x': 30, 'y': 180}, {'x': 305, 'y': 255}, {
+    'x': 105,
+    'y': 305
+  }, {'x': 105, 'y': 255}, {'x': 205, 'y': 155}, {'x': 405, 'y': 280}, {'x': 405, 'y': 55}, {'x': 30, 'y': 30}]
+  //generatePoints(30, 30, 400, 30, 300)
+  /*
+
+    insertConstraint(ea, points[29], points[10])
+    insertConstraint(ea, points[10], points[28])
+    insertConstraint(ea, points[28], points[2])
+   */
+  const constraints = [[29, 10], [10, 28], [28, 2]]
+
+  const envelopeGroup = svg.group().attr({
+    stroke: 'lightgray',
+    'stroke-width': 10,
+    'stroke-linejoin': 'arcs',
+    'fill': 'none'
+  })
+
+  const background = svg.group()
+  const root = svg.group().attr({stroke: 'red', fill: 'none', class: 'root', 'vector-effect': 'non-scaling-stroke'})
+  const arrowMarker = svg.marker(10, 10, function (g) {
+    g.path('M0,0 L10,5 0,10').attr('fill', 'green')
+  })
+  const blueGroup = svg.group().attr({stroke: 'blue', fill: 'blue'})
+  const edgeGroup = svg.group().attr({class: 'edges', 'vector-effect': 'non-scaling-stroke'})
+  edgeGroup.attr({stroke: 'green', 'stroke-width': 1.5, 'marker-end': arrowMarker})
+
+  const envelope = new Envelope()
+  points.forEach(({x, y}) => envelope.addPoint(x, y))
+
+  function displayPoint (p, name) {
+    root.line(p.x - 10, p.y - 10, p.x + 10, p.y + 10)
+    root.line(p.x - 10, p.y + 10, p.x + 10, p.y - 10)
+    root.plain(name).move(p.x, p.y)
+  }
+
+  let botLeft = envelope.botLeft
+  let botRight = envelope.botRight
+  let apex = envelope.apex
+  const ea = makeTriangle(apex, botRight, botLeft)
+  ea.rot.vertex = generateColor()
+
+  displayPolygon([ea, ea.lNext, ea.lNext.lNext], envelopeGroup)
+
+  let i = 0
+  for (let vertex of points) {
+    displayPoint(vertex, 'V' + i)
+    const polygons = background.group()
+    for (let polygon of iteratePolygons(ea)) {
+      polygons.polygon(polygon.map(point => [point.x, point.y])).attr({
+        fill: 'blue',
+        'fill-opacity': 0.2,
+        stroke: 'white',
+        'stroke-width': 2,
+        'stroke-linejoin': 'round'
+      })
+    }
+    insertSite(ea, vertex)
+    polygons.remove()
+    i++
+  }
+/*
+  for (let constraint of constraints) {
+    insertConstraint(ea, points[constraint[0]], points[constraint[1]])
+  }
+*/
+  let currentCircle = null
+  let skippedVertices = new Set([apex, botRight, botLeft])
+  for (let polygon of iteratePolygons(ea, skippedVertices)) {
+    background.polygon(polygon.map(point => [point.x, point.y])).attr({
+      fill: 'blue',
+      'fill-opacity': 0.4,
+      stroke: 'white',
+      'stroke-width': 4,
+      'stroke-linejoin': 'round'
+    }).click(() => {
+      if (currentCircle)
+        currentCircle.remove()
+      const circleDef = circumCircle(...polygon)
+      currentCircle = root.group()
+      currentCircle.polygon(polygon.map(point => [point.x, point.y])).attr({
+        fill: 'red',
+        stroke: 'white',
+        'stroke-width': 4,
+        'stroke-linejoin': 'round'
+      })
+      currentCircle.circle(circleDef.r * 2).move(circleDef.x - circleDef.r, circleDef.y - circleDef.r)
+    })
+  }
+  aStar(ea, points[27], points[20])
+  /*
+  for (let e of Object.values(collectUndirectedEdges(ea, skippedVertices))) {
+    displayEdge(e, blueGroup)
+  }
+  */
+
+</script>
+</body>
+</html>
