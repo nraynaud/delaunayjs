@@ -148,6 +148,11 @@
     return e
   }
 
+  function deleteEdge (e) {
+    splice(e, e.oPrev)
+    splice(e.sym, e.sym.oPrev)
+  }
+
   function swap (e) {
     const a = e.oPrev
     const b = e.sym.oPrev
@@ -249,7 +254,7 @@
     return ccw(point, edge.dest, edge.org)
   }
 
-  // one edge and 2 points
+  // one edge and 2 points, will return false if edge and points are collinear
   function doesIntersect (edge, p1, p2) {
     //https://stackoverflow.com/a/1968345/72637
     const s1X = edge.dest.x - edge.org.x
@@ -257,9 +262,28 @@
     const s2X = p2.x - p1.x
     const s2Y = p2.y - p1.y
     let denominator = (-s2X * s1Y + s1X * s2Y)
+    if (denominator === 0)
+      return false
     let s = (-s1Y * (edge.org.x - p1.x) + s1X * (edge.org.y - p1.y)) / denominator
     let t = (s2X * (edge.org.y - p1.y) - s2Y * (edge.org.x - p1.x)) / denominator
+    if (!isFinite(s))
+      return false
+    if (isNaN(s))
+      throw new Error('Nan')
     return (s >= 0 && s <= 1 && t >= 0 && t <= 1)
+  }
+
+  // https://stackoverflow.com/a/328110/72637
+  // http://bit-player.org/wp-content/extras/bph-publications/BeautifulCode-2007-Hayes.pdf
+  function pointIsOnSegment (p1, p2, testPoint) {
+    function within (a, b, candidate) {
+      const arr = [a, b, candidate]
+      arr.sort((a, b) => a - b)
+      return arr[1] === candidate
+    }
+
+    const collinear = (p2.x - p1.x) * (testPoint.y - p1.y) === (testPoint.x - p1.x) * (p2.y - p1.y)
+    return collinear && (p1.x !== p2.x ? within(p1.x, p2.x, testPoint.x) : within(p1.y, p2.y, testPoint.y))
   }
 
   function edgeEndsAtPoint (edge, point) {
@@ -354,23 +378,60 @@
     }
   }
 
-  function insertConstraint (edge, p1, p2) {
-    const newEdgeGroup = svg.group().attr({stroke: 'green', 'stroke-width': 3})
+  function displayAllPolygons (edge, svgGroup) {
+    for (let polygon of iteratePolygons(edge)) {
+      svgGroup.polygon(polygon.map(point => [point.x, point.y])).attr({
+        fill: 'blue',
+        'fill-opacity': 0.2,
+        stroke: 'white',
+        'stroke-width': 2,
+        'stroke-linejoin': 'round'
+      })
+    }
+  }
 
+  class PointOnSegmentError extends Error {
+    constructor (message, point) {
+      super(message)
+      this.point = point
+    }
+  }
+
+  /**
+   *
+   * http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.61.3862&rep=rep1&type=pdf
+   * https://infoscience.epfl.ch/record/100269/files/Kallmann_and_al_Geometric_Modeling_03.pdf
+   * @throws PointOnSegmentError every time a point is found exactly on the constraint
+   */
+  function insertConstraint (edge, p1, p2) {
     let e = locateFromEdge(p1, edge)
-    if (e.vertex !== p1)
+    if (e.org !== p1)
       e = e.sym
+    // check if there is an existing edge from P1 to P2
+    for (let n of getNeighbors(e)) {
+      if (edgeEndsAtPoint(n, p2)) {
+        n.constrained = true
+        n.sym.constrained = true
+        return n
+      }
+    }
     while (!doesIntersect(e.rPrev, p1, p2))
       e = e.oNext
     const findNextCrossingEdge = (e) => doesIntersect(e.rPrev, p1, p2) && !edgeEndsAtPoint(e.rPrev, p1) && !edgeEndsAtPoint(e.rPrev, p2) ? e.rPrev : e.rPrev.rPrev
     let e1 = e.rPrev.sym
     const intersectingEdges = []
     while (!edgeEndsAtPoint(e1, p2)) {
+      if (pointIsOnSegment(p1, p2, e1.org))
+        throw new PointOnSegmentError('point on Segment', e1.org)
+      if (pointIsOnSegment(p1, p2, e1.dest))
+        throw new PointOnSegmentError('point on Segment', e1.dest)
       intersectingEdges.push(e1)
       e1 = findNextCrossingEdge(e1).sym
     }
+
     let currentEdge
     const newEdgesSet = new Set()
+    //move the intersecting edges out of the way
     while ((currentEdge = intersectingEdges.shift())) {
       if (isQuadAroundEdgeConvex(currentEdge)) {
         swap(currentEdge)
@@ -381,17 +442,25 @@
         intersectingEdges.push(currentEdge)
     }
     const newEdges = [...newEdgesSet]
-    while ((currentEdge = newEdges.shift())) {
-      if (!(edgeEndsAtPoint(currentEdge, p1) && edgeEndsAtPoint(currentEdge, p2))) {
-        if (isQuadAroundEdgeConvex(currentEdge) && inCircleEdge(currentEdge)) {
-          swap(currentEdge)
+    let constrainedEdge = null
+    let hasSwapped
+    // try to fix the triangulation
+    do {
+      hasSwapped = false
+      for (currentEdge of newEdges) {
+        if (!(edgeEndsAtPoint(currentEdge, p1) && edgeEndsAtPoint(currentEdge, p2))) {
+          if (isQuadAroundEdgeConvex(currentEdge) && inCircleEdge(currentEdge)) {
+            swap(currentEdge)
+            hasSwapped = true
+          }
+        } else {
+          currentEdge.constrained = true
+          currentEdge.sym.constrained = true
+          constrainedEdge = currentEdge
         }
-      } else {
-        currentEdge.constrained = true
-        currentEdge.sym.constrained = true
-        displayEdge(currentEdge, newEdgeGroup)
       }
-    }
+    } while (hasSwapped)
+    return constrainedEdge
   }
 
   function insertSite (edge, vertex) {
@@ -510,7 +579,6 @@
       deleted,
       queue,
       addToQueue: (v, priority) => {
-        console.log('addToQueue', v, priority)
         queue.push({v, priority})
         queue.sort(sortOrder)
       },
@@ -538,6 +606,8 @@
   //https://en.wikipedia.org/wiki/A*_search_algorithm
   //https://www.youtube.com/watch?v=ySN5Wnu88nE
   //https://www.redblobgames.com/pathfinding/a-star/implementation.html
+  // for now this is a weird navigation on the graph, where the start and end points
+  // are the center of one of the faces adjacent to the start and end vertex
   function aStar (oneEdge, startVertex, destinationVertex) {
     const nextEdge = e => e.next.sym //e => e.sym.lNext
     let endEdge = locateFromEdge(destinationVertex, oneEdge)
@@ -546,7 +616,6 @@
     let startEdge = locateFromEdge(startVertex, oneEdge)
     if (startEdge.org !== startVertex)
       startEdge = startEdge.sym
-    circlePoint(startVertex, root)
     startEdge = startEdge.invRot
     startVertex = startEdge.org
     circlePoint(startVertex, root)
@@ -557,14 +626,11 @@
     const costSoFar = {[pointID(startEdge.org)]: 0}
     while (!queue.isQueueEmpty()) {
       const current = queue.getFromQueue()
-      console.log('current', current)
       const currentVertexID = pointID(current.org)
       if (current.org === destinationVertex)
         break
       let neighbors = getNeighbors(current, e => e.sym.next.sym)
-      let nGroup = root.group().attr({stroke: 'black', 'stroke-width': 2, 'marker-end': arrowMarker})
       for (let n of neighbors) {
-        displayEdge(n, nGroup)
         const neighborVertexID = pointID(n.dest)
         let edgeLength = distance(n.org, n.dest)
         if (n.rot.constrained)
@@ -573,23 +639,20 @@
         if (costSoFar[neighborVertexID] === undefined || newCost < costSoFar[neighborVertexID]) {
           costSoFar[neighborVertexID] = newCost
           const priority = newCost + heuristic(destinationVertex, n.dest)
-          displayEdge(nextEdge(n), nGroup)
           queue.addToQueue(nextEdge(n), priority)
           cameFrom[neighborVertexID] = n
         }
       }
-      nGroup.remove()
     }
-    console.log('costSoFar', costSoFar)
-    console.log('cameFrom', cameFrom)
     let currentPoint = destinationVertex
+    const result = []
     while (currentPoint !== startVertex) {
       const vID = pointID(currentPoint)
       const edge = cameFrom[vID]
-      displayEdge(edge, edgeGroup)
-      displayEdge(edge.rot, root)
+      result.unshift(edge)
       currentPoint = edge.org
     }
+    return result
   }
 
 </script>
@@ -632,20 +695,34 @@
     }
   }
 
+  // for each face, sets its vertex as the barycenter, not really voronoi
+  // the external face gets a {x: Infinity, y: Infinity} vertex.
   function setVoronoiVertices (startEdge, skippedVertices = new Set()) {
     for (let edgeArray of iterateEdgesPerFace(startEdge, skippedVertices)) {
       const x = edgeArray.reduce((acc, val) => acc + val.org.x, 0) / edgeArray.length
       const y = edgeArray.reduce((acc, val) => acc + val.org.y, 0) / edgeArray.length
       let p = {x, y}
-      console.log('p', p)
+      if (polygonArea(edgeArray.map(e => e.org)) > 0)
+        p = {x: Infinity, y: Infinity}
       for (let e of edgeArray)
         e.left = p
     }
   }
 
+  function polygonArea (points) {
+    let sum = 0
+    const length = points.length
+    for (let i = 0; i < length; i++) {
+      const p1 = points[i]
+      const p2 = points[(i + 1) % length]
+      sum += (p2.x - p1.x) * (p2.y + p1.y)
+    }
+    return sum
+  }
+
   let svg = SVG($('#draw')[0])
 
-  const points = [{'x': 30, 'y': 155}, {'x': 380, 'y': 180}, {'x': 305, 'y': 180}, {'x': 130, 'y': 30}, {
+  let points = [{'x': 30, 'y': 155}, {'x': 380, 'y': 180}, {'x': 305, 'y': 180}, {'x': 130, 'y': 30}, {
     'x': 155,
     'y': 305
   }, {'x': 105, 'y': 105}, {'x': 280, 'y': 105}, {'x': 180, 'y': 230}, {'x': 80, 'y': 280}, {
@@ -662,21 +739,7 @@
     'y': 305
   }, {'x': 105, 'y': 255}, {'x': 205, 'y': 155}, {'x': 405, 'y': 280}, {'x': 405, 'y': 55}, {'x': 30, 'y': 30}]
 
-  // const points =generatePoints(30, 30, 400, 30, 300)
-  /*
-
-    insertConstraint(ea, points[29], points[10])
-    insertConstraint(ea, points[10], points[28])
-    insertConstraint(ea, points[28], points[2])
-   */
-  const constraints = [[7, 6]]
-
-  const envelopeGroup = svg.group().attr({
-    stroke: 'lightgray',
-    'stroke-width': 10,
-    'stroke-linejoin': 'arcs',
-    'fill': 'none'
-  })
+  const constraints = [[7, 26], [9, 10], [26, 15], [24, 5]]
 
   const background = svg.group()
   const root = svg.group().attr({stroke: 'red', fill: 'none', class: 'root', 'vector-effect': 'non-scaling-stroke'})
@@ -699,10 +762,7 @@
   let botLeft = envelope.botLeft
   let botRight = envelope.botRight
   let apex = envelope.apex
-  const ea = makeTriangle(apex, botRight, botLeft)
-  //ea.rot.vertex = generateColor()
-
-  displayPolygon([ea, ea.lNext, ea.lNext.lNext], envelopeGroup)
+  let ea = makeTriangle(apex, botRight, botLeft)
 
   let i = 0
   for (let vertex of points) {
@@ -722,42 +782,78 @@
     i++
   }
 
-  for (let constraint of constraints) {
-    insertConstraint(ea, points[constraint[0]], points[constraint[1]])
+  let skippedVertices = new Set([apex, botRight, botLeft])
+
+  // find an edge that will not be destroyed
+  for (let face of iterateEdgesPerFace(ea)) {
+    for (let edge of face)
+      if (!(skippedVertices.has(edge.org) || skippedVertices.has(edge.dest))) {
+        ea = edge
+      }
   }
 
-  let skippedVertices = new Set([apex, botRight, botLeft])
+  function deleteVertices (verticesSet) {
+    const collected = new Set()
+    for (let face of iterateEdgesPerFace(ea)) {
+      for (let edge of face) {
+        if (verticesSet.has(edge.org)) {
+          collected.add(edge)
+        }
+      }
+    }
+    for (let edge of collected) {
+      deleteEdge(edge)
+    }
+  }
+
+  deleteVertices(new Set([apex, botRight, botLeft]))
+
+  for (let constraint of constraints) {
+    let splitSegments = [[points[constraint[0]], points[constraint[1]]]]
+    while (splitSegments.length) {
+      const currentConstraint = splitSegments.shift()
+      try {
+        const constrainedEdge = insertConstraint(ea, currentConstraint[0], currentConstraint[1])
+        displayEdge(constrainedEdge, root).attr({stroke: 'red', 'stroke-width': '3'})
+      } catch (e) {
+        if (e instanceof PointOnSegmentError) {
+          splitSegments.unshift([e.point, currentConstraint[1]])
+          splitSegments.unshift([currentConstraint[0], e.point])
+        } else
+          throw e
+      }
+    }
+  }
+
   setVoronoiVertices(ea)
 
   let currentCircle = null
-  for (let polygon of iteratePolygons(ea, skippedVertices)) {
-    background.polygon(polygon.map(point => [point.x, point.y])).attr({
-      fill: 'blue',
-      'fill-opacity': 0.4,
-      stroke: 'white',
-      'stroke-width': 4,
-      'stroke-linejoin': 'round'
-    }).click(() => {
-      if (currentCircle)
-        currentCircle.remove()
-      const circleDef = circumCircle(...polygon)
-      currentCircle = root.group()
-      currentCircle.polygon(polygon.map(point => [point.x, point.y])).attr({
-        fill: 'red',
+  for (let polygon of iteratePolygons(ea)) {
+    if (polygonArea(polygon) < 0)
+      background.polygon(polygon.map(point => [point.x, point.y])).attr({
+        fill: 'blue',
+        'fill-opacity': 0.3,
         stroke: 'white',
         'stroke-width': 4,
         'stroke-linejoin': 'round'
+      }).click(() => {
+        if (currentCircle)
+          currentCircle.remove()
+        const circleDef = circumCircle(...polygon)
+        currentCircle = root.group()
+        currentCircle.polygon(polygon.map(point => [point.x, point.y])).attr({
+          fill: 'red',
+          stroke: 'white',
+          'stroke-width': 4,
+          'stroke-linejoin': 'round'
+        })
+        currentCircle.circle(circleDef.r * 2).move(circleDef.x - circleDef.r, circleDef.y - circleDef.r)
       })
-      currentCircle.circle(circleDef.r * 2).move(circleDef.x - circleDef.r, circleDef.y - circleDef.r)
-    })
   }
 
-  aStar(ea, points[23], points[20])
-  /*
-  for (let e of Object.values(collectUndirectedEdges(ea, skippedVertices))) {
-    displayEdge(e, blueGroup)
-  }
-  */
+  const path = aStar(ea, points[23], points[13])
+  for (let e of path)
+    displayEdge(e, edgeGroup).attr({stroke: 'black'})
 
 </script>
 </body>
