@@ -649,11 +649,7 @@
     polygons.remove()
     i++
   }
-  /*
-    for (let constraint of constraints) {
-      insertConstraint(ea, points[constraint[0]], points[constraint[1]])
-    }
-  */
+
   let currentCircle = null
   let skippedVertices = new Set([apex, botRight, botLeft])
   for (let polygon of iteratePolygons(ea, skippedVertices)) {
@@ -679,11 +675,6 @@
   }
 
   aStar(ea, points[27], points[20])
-  /*
-  for (let e of Object.values(collectUndirectedEdges(ea, skippedVertices))) {
-    displayEdge(e, blueGroup)
-  }
-  */
 
 </script>
 </body>
