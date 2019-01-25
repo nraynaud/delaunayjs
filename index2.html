@@ -196,7 +196,6 @@
 
   function circumCircle (a, b, c) {
     const {x, y} = circumCenter(a, b, c)
-    console.log('circumCenter', {x, y}, a, b, c)
     const sq = v => v * v
     return {x, y, r: Math.sqrt(sq(a.x - x) + sq(a.y - y))}
   }
@@ -266,9 +265,7 @@
     const edgeVector = (fromP, toP) => ({x: toP.x - fromP.x, y: toP.y - fromP.y})
     const crossProductZ = (v1, v2) => v1.x * v2.y - v1.y * v2.x
     const edgesCrossProducts = arr.map((p, i) => crossProductZ(edgeVector(p, nextPoint(i)), edgeVector(nextPoint(i), nextPoint(i + 1))))
-    console.log('edgesCrossProducts', edgesCrossProducts)
     edgesCrossProducts.sort((a, b) => a - b)
-    console.log('edgesCrossProducts', edgesCrossProducts)
     return Math.sign(edgesCrossProducts.shift()) * Math.sign(edgesCrossProducts.pop()) === 1
   }
 
@@ -351,61 +348,107 @@
     } while (true)
   }
 
+  // https://stackoverflow.com/a/328110/72637
+  // http://bit-player.org/wp-content/extras/bph-publications/BeautifulCode-2007-Hayes.pdf
+  function pointIsOnSegment (p1, p2, testPoint) {
+    function within (a, b, candidate) {
+      const arr = [a, b, candidate]
+      arr.sort((a, b) => a - b)
+      return arr[1] === candidate
+    }
+
+    const collinear = (p2.x - p1.x) * (testPoint.y - p1.y) === (testPoint.x - p1.x) * (p2.y - p1.y)
+    return collinear && (p1.x !== p2.x ? within(p1.x, p2.x, testPoint.x) : within(p1.y, p2.y, testPoint.y))
+  }
+
+  function getNeighbors (edge, neighborOperator = e => e.oPrev) {
+    const res = []
+    let e = edge
+    do {
+      e = neighborOperator(e)
+      res.push(e)
+    } while (e !== edge)
+    return res
+  }
+
+  class PointOnSegmentError extends Error {
+    constructor (message, point) {
+      super(message)
+      this.point = point
+    }
+  }
+
+  /**
+   *
+   * http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.61.3862&rep=rep1&type=pdf
+   * https://infoscience.epfl.ch/record/100269/files/Kallmann_and_al_Geometric_Modeling_03.pdf
+   * @throws PointOnSegmentError
+   */
   function insertConstraint (edge, p1, p2) {
     const newEdgeGroup = svg.group().attr({stroke: 'green', 'stroke-width': 3})
-    newEdgeGroup.line(p1.x, p1.y, p2.x, p2.y)
-    let e = locateFromEdge(p1, edge)
-    if (e.vertex !== p1)
-      e = e.sym
-    while (!doesIntersect(e.rPrev, p1, p2))
-      e = e.oNext
-    const findNextCrossingEdge = (e) => doesIntersect(e.rPrev, p1, p2) && !edgeEndsAtPoint(e.rPrev, p1) && !edgeEndsAtPoint(e.rPrev, p2) ? e.rPrev : e.rPrev.rPrev
-    let e1 = e.rPrev.sym
-    const intersectingEdges = []
-    while (!edgeEndsAtPoint(e1, p2)) {
-      intersectingEdges.push(e1)
-      e1 = findNextCrossingEdge(e1).sym
-    }
-    const displayGroup = root.group()
-    let currentEdge
-    let i = 0
-    const newEdgesSet = new Set()
-    while ((currentEdge = intersectingEdges.shift()) && i < 1000) {
-      i++
-      if (isQuadAroundEdgeConvex(currentEdge)) {
-        swap(currentEdge)
-        newEdgesSet.add(currentEdge)
-        displayEdge(currentEdge, displayGroup).attr({stroke: 'black'})
-        if (!edgeEndsAtPoint(currentEdge, p1) && !edgeEndsAtPoint(currentEdge, p2) && doesIntersect(currentEdge, p1, p2))
-          intersectingEdges.push(currentEdge)
-      } else
-        intersectingEdges.push(currentEdge)
-    }
-    displayGroup.remove()
-    const newEdges = [...newEdgesSet]
-    i = 0
-    while ((currentEdge = newEdges.shift()) && i < 1000) {
-      const polygons = background.group()
-      for (let polygon of iteratePolygons(edge)) {
-        polygons.polygon(polygon.map(point => [point.x, point.y])).attr({
-          fill: 'blue',
-          'fill-opacity': 0.2,
-          stroke: 'white',
-          'stroke-width': 2,
-          'stroke-linejoin': 'round'
-        })
-      }
-      const newEdgesGroup = root.group()
-      if (!(edgeEndsAtPoint(currentEdge, p1) && edgeEndsAtPoint(currentEdge, p2))) {
-        displayEdge(currentEdge, newEdgesGroup).attr({stroke: 'gray', 'stroke-width': 5})
-        displayEdgeCircumCircle(currentEdge, newEdgesGroup).attr({stroke: 'gray', 'stroke-width': 1})
-        if (isQuadAroundEdgeConvex(currentEdge) && inCircleEdge(currentEdge)) {
-          swap(currentEdge)
-          displayEdge(currentEdge, newEdgesGroup).attr({stroke: 'black', 'stroke-width': 5})
+    try {
+      newEdgeGroup.line(p1.x, p1.y, p2.x, p2.y)
+      let e = locateFromEdge(p1, edge)
+      if (e.org !== p1)
+        e = e.sym
+      // check if there is an existing edge from P1 to P2
+      for (let n of getNeighbors(e)) {
+        if (edgeEndsAtPoint(n, p2)) {
+          n.constrained = true
+          n.sym.constrained = true
+          return n
         }
       }
-      newEdgesGroup.remove()
-      polygons.remove()
+      while (!doesIntersect(e.rPrev, p1, p2))
+        e = e.oNext
+      const findNextCrossingEdge = (e) => doesIntersect(e.rPrev, p1, p2) && !edgeEndsAtPoint(e.rPrev, p1) && !edgeEndsAtPoint(e.rPrev, p2) ? e.rPrev : e.rPrev.rPrev
+      let e1 = e.rPrev.sym
+      const intersectingEdges = []
+      while (!edgeEndsAtPoint(e1, p2)) {
+        if (pointIsOnSegment(p1, p2, e1.org))
+          throw new PointOnSegmentError('point on Segment', e1.org)
+        if (pointIsOnSegment(p1, p2, e1.dest))
+          throw new PointOnSegmentError('point on Segment', e1.dest)
+        intersectingEdges.push(e1)
+        e1 = findNextCrossingEdge(e1).sym
+      }
+
+      let currentEdge
+      const newEdgesSet = new Set()
+      while ((currentEdge = intersectingEdges.shift())) {
+        const svgE = displayEdge(currentEdge, root)
+        if (isQuadAroundEdgeConvex(currentEdge)) {
+          swap(currentEdge)
+          newEdgesSet.add(currentEdge)
+          if (!edgeEndsAtPoint(currentEdge, p1) && !edgeEndsAtPoint(currentEdge, p2) && doesIntersect(currentEdge, p1, p2))
+            intersectingEdges.push(currentEdge)
+        } else
+          intersectingEdges.push(currentEdge)
+        svgE.remove()
+      }
+      const newEdges = [...newEdgesSet]
+      let constrainedEdge = null
+      let hasSwapped
+      do {
+        hasSwapped = false
+        for (currentEdge of newEdges) {
+          let svgEdge = displayEdge(currentEdge, root)
+          if (!(edgeEndsAtPoint(currentEdge, p1) && edgeEndsAtPoint(currentEdge, p2))) {
+            if (isQuadAroundEdgeConvex(currentEdge) && inCircleEdge(currentEdge)) {
+              swap(currentEdge)
+              hasSwapped = true
+            }
+          } else {
+            currentEdge.constrained = true
+            currentEdge.sym.constrained = true
+            constrainedEdge = currentEdge
+          }
+          svgEdge.remove()
+        }
+      } while (hasSwapped)
+      return constrainedEdge
+    } finally {
+      newEdgeGroup.remove()
     }
   }
 
@@ -565,7 +608,21 @@
     i++
   }
 
-  insertConstraint(ea, points[29], points[2])
+  let splitSegments = [[points[29], points[2]]]
+  while (splitSegments.length) {
+    const currentConstraint = splitSegments.shift()
+    try {
+      const constrainedEdge = insertConstraint(ea, currentConstraint[0], currentConstraint[1])
+      displayEdge(constrainedEdge, edgeGroup).attr({stroke: 'green', 'stroke-width': 2})
+    } catch (e) {
+      if (e instanceof PointOnSegmentError) {
+        splitSegments.unshift([e.point, currentConstraint[1]])
+        splitSegments.unshift([currentConstraint[0], e.point])
+      } else
+        throw e
+    }
+  }
+
   let currentCircle = null
   for (let polygon of iteratePolygons(ea, new Set([apex, botRight, botLeft]))) {
     background.polygon(polygon.map(point => [point.x, point.y])).attr({
