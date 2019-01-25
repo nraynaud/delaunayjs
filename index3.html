@@ -351,64 +351,6 @@
     }
   }
 
-  function insertConstraint (edge, p1, p2) {
-    const newEdgeGroup = svg.group().attr({stroke: 'green', 'stroke-width': 3})
-    newEdgeGroup.line(p1.x, p1.y, p2.x, p2.y)
-    let e = locateFromEdge(p1, edge)
-    if (e.vertex !== p1)
-      e = e.sym
-    while (!doesIntersect(e.rPrev, p1, p2))
-      e = e.oNext
-    const findNextCrossingEdge = (e) => doesIntersect(e.rPrev, p1, p2) && !edgeEndsAtPoint(e.rPrev, p1) && !edgeEndsAtPoint(e.rPrev, p2) ? e.rPrev : e.rPrev.rPrev
-    let e1 = e.rPrev.sym
-    const intersectingEdges = []
-    while (!edgeEndsAtPoint(e1, p2)) {
-      intersectingEdges.push(e1)
-      e1 = findNextCrossingEdge(e1).sym
-    }
-    const displayGroup = root.group()
-    let currentEdge
-    let i = 0
-    const newEdgesSet = new Set()
-    while ((currentEdge = intersectingEdges.shift()) && i < 1000) {
-      i++
-      if (isQuadAroundEdgeConvex(currentEdge)) {
-        swap(currentEdge)
-        newEdgesSet.add(currentEdge)
-        displayEdge(currentEdge, displayGroup).attr({stroke: 'black'})
-        if (!edgeEndsAtPoint(currentEdge, p1) && !edgeEndsAtPoint(currentEdge, p2) && doesIntersect(currentEdge, p1, p2))
-          intersectingEdges.push(currentEdge)
-      } else
-        intersectingEdges.push(currentEdge)
-    }
-    displayGroup.remove()
-    const newEdges = [...newEdgesSet]
-    i = 0
-    while ((currentEdge = newEdges.shift()) && i < 1000) {
-      const polygons = background.group()
-      for (let polygon of iteratePolygons(edge)) {
-        polygons.polygon(polygon.map(point => [point.x, point.y])).attr({
-          fill: 'blue',
-          'fill-opacity': 0.2,
-          stroke: 'white',
-          'stroke-width': 2,
-          'stroke-linejoin': 'round'
-        })
-      }
-      const newEdgesGroup = root.group()
-      if (!(edgeEndsAtPoint(currentEdge, p1) && edgeEndsAtPoint(currentEdge, p2))) {
-        displayEdge(currentEdge, newEdgesGroup).attr({stroke: 'gray', 'stroke-width': 5})
-        displayEdgeCircumCircle(currentEdge, newEdgesGroup).attr({stroke: 'gray', 'stroke-width': 1})
-        if (isQuadAroundEdgeConvex(currentEdge) && inCircleEdge(currentEdge)) {
-          swap(currentEdge)
-          displayEdge(currentEdge, newEdgesGroup).attr({stroke: 'black', 'stroke-width': 5})
-        }
-      }
-      newEdgesGroup.remove()
-      polygons.remove()
-    }
-  }
-
   function insertSite (edge, vertex) {
     let e = locateFromEdge(vertex, edge)
     if (e.org === vertex || e.dest === vertex) {
@@ -542,7 +484,6 @@
       deleted,
       queue,
       addToQueue: (v, priority) => {
-        console.log('addToQueue', v, priority)
         queue.push({v, priority})
         queue.sort(sortOrder)
       },
@@ -567,10 +508,16 @@
     return res
   }
 
+  function circlePoint (vertex, group) {
+    return group.circle(10).move(vertex.x - 5, vertex.y - 5).attr({'stroke-width': 1, fill: 'none'})
+  }
+
   //https://en.wikipedia.org/wiki/A*_search_algorithm
   //https://www.youtube.com/watch?v=ySN5Wnu88nE
   //https://www.redblobgames.com/pathfinding/a-star/implementation.html
   function aStar (oneEdge, startVertex, destinationVertex) {
+    circlePoint(startVertex, root).attr({'stroke': 'blue'})
+    circlePoint(destinationVertex, root).attr({'stroke': 'red'})
     let startEdge = locateFromEdge(startVertex, oneEdge)
     if (startEdge.org !== startVertex)
       startEdge = startEdge.sym
@@ -650,30 +597,7 @@
   }
 
   let svg = SVG($('#draw')[0])
-  const points = [{'x': 30, 'y': 155}, {'x': 380, 'y': 180}, {'x': 305, 'y': 180}, {'x': 130, 'y': 30}, {
-    'x': 155,
-    'y': 305
-  }, {'x': 105, 'y': 105}, {'x': 280, 'y': 105}, {'x': 180, 'y': 230}, {'x': 80, 'y': 280}, {
-    'x': 255,
-    'y': 305
-  }, {'x': 255, 'y': 80}, {'x': 305, 'y': 305}, {'x': 280, 'y': 205}, {'x': 55, 'y': 155}, {
-    'x': 180,
-    'y': 55
-  }, {'x': 180, 'y': 30}, {'x': 380, 'y': 30}, {'x': 330, 'y': 130}, {'x': 30, 'y': 205}, {
-    'x': 205,
-    'y': 105
-  }, {'x': 55, 'y': 55}, {'x': 330, 'y': 280}, {'x': 30, 'y': 180}, {'x': 305, 'y': 255}, {
-    'x': 105,
-    'y': 305
-  }, {'x': 105, 'y': 255}, {'x': 205, 'y': 155}, {'x': 405, 'y': 280}, {'x': 405, 'y': 55}, {'x': 30, 'y': 30}]
-  //generatePoints(30, 30, 400, 30, 300)
-  /*
-
-    insertConstraint(ea, points[29], points[10])
-    insertConstraint(ea, points[10], points[28])
-    insertConstraint(ea, points[28], points[2])
-   */
-  const constraints = [[29, 10], [10, 28], [28, 2]]
+  const points = generatePoints(30, 30, 400, 30, 300)
 
   const envelopeGroup = svg.group().attr({
     stroke: 'lightgray',
@@ -725,11 +649,11 @@
     polygons.remove()
     i++
   }
-/*
-  for (let constraint of constraints) {
-    insertConstraint(ea, points[constraint[0]], points[constraint[1]])
-  }
-*/
+  /*
+    for (let constraint of constraints) {
+      insertConstraint(ea, points[constraint[0]], points[constraint[1]])
+    }
+  */
   let currentCircle = null
   let skippedVertices = new Set([apex, botRight, botLeft])
   for (let polygon of iteratePolygons(ea, skippedVertices)) {
@@ -753,6 +677,7 @@
       currentCircle.circle(circleDef.r * 2).move(circleDef.x - circleDef.r, circleDef.y - circleDef.r)
     })
   }
+
   aStar(ea, points[27], points[20])
   /*
   for (let e of Object.values(collectUndirectedEdges(ea, skippedVertices))) {
