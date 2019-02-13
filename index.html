@@ -23,7 +23,6 @@
     shaped polygon" of Bowyer-Watson)
 </div>
 <script src="svg.js"></script>
-<script src="jquery-1.11.1.min.js"></script>
 <script>
   // http://www.cs.cmu.edu/afs/andrew/scs/cs/15-463/2001/pub/src/a2/cell/
   // https://github.com/hastebrot/jsts-dist/blob/master/src/jsts
@@ -405,7 +404,7 @@
     }
   }
 
-  let svg = SVG($('#draw')[0])
+  let svg = SVG(document.querySelector('#draw')[0])
   points = generatePoints(50, 30, 400, 30, 300)
   const envelopeGroup = svg.group().attr({
     stroke: 'lightgray',

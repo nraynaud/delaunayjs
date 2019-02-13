@@ -13,7 +13,6 @@
 
 
 <script src="svg.js"></script>
-<script src="jquery-1.11.1.min.js"></script>
 <script>
   // http://www.cs.cmu.edu/afs/andrew/scs/cs/15-463/2001/pub/src/a2/cell/
   // https://github.com/hastebrot/jsts-dist/blob/master/src/jsts
@@ -720,7 +719,7 @@
     return sum
   }
 
-  let svg = SVG($('#draw')[0])
+  let svg = SVG(document.querySelector('#draw'))
 
   let points = [{'x': 30, 'y': 155}, {'x': 380, 'y': 180}, {'x': 305, 'y': 180}, {'x': 130, 'y': 30}, {
     'x': 155,
